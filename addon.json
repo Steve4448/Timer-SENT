@@ -1,0 +1,13 @@
+{
+	"title"		:	"Alarm Clock",
+	"type"		:	"entity",
+	"tags"		:	["roleplay"],
+	"ignore"	:
+	[
+		"*.png",
+		"*.jpg",
+		"*.gma",
+		"*.smd",
+		"*.qc"
+	]
+}

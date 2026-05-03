@@ -1,0 +1,6 @@
+"VertexLitGeneric"
+{
+	"$basetexture" "entities/vetes/darkrp_alarm_clock_glass"
+    "$vertexcolor" "1"
+    "$vertexalpha" "1"
+}
