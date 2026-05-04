@@ -1,9 +1,10 @@
 if SERVER then
     AddCSLuaFile()
-    util.AddNetworkString("darkrp_alarm_timer_openui")
-    util.AddNetworkString("darkrp_alarm_timer_config")
-    ENT.MinimumAlarmTime = CreateConVar("darkrp_alarm_clock_minimum_time", "5", FCVAR_ARCHIVE, "The minimum timer allowed to be set (in minutes).")
-    ENT.AlarmNameMaxCharacters = CreateConVar("darkrp_alarm_name_max_chars", "20", FCVAR_ARCHIVE, "The maximum amount of characters allowed for the timer's name.")
+    util.AddNetworkString("v_alarm_timer_openui")
+    util.AddNetworkString("v_alarm_timer_config")
+    ENT.MinimumAlarmTime = CreateConVar("v_alarm_minimum_time", "5", FCVAR_ARCHIVE, "The minimum timer allowed to be set (in minutes).")
+    ENT.AlarmMaxHealth = CreateConVar("v_alarm_max_health", "1000", FCVAR_ARCHIVE, "The alarm can take this much damage before being destroyed.")
+    ENT.AlarmNameMaxCharacters = CreateConVar("v_alarm_name_max_chars", "20", FCVAR_ARCHIVE, "The maximum amount of characters allowed for the timer's name.")
 end
 ENT.Base = "base_gmodentity"
 ENT.Type = "anim"
@@ -49,7 +50,10 @@ function ENT:Initialize()
     end
     self:SetRPTimerName("")
     self:SetRPTimerPlaying(false)
+    self:SetRPTimerStopwatch(false)
     self:SetRPTimerEndTime(-1)
+    self:SetRPTimerStopwatchStartTime(-1)
+    self:SetRPTimerStopwatchPauseTime(-1)
     self:SetRPTimerAlarmSound(self.AvailableAlarmSounds[1])
     self:SetRPTimerColorR(self.DefaultFontColor.r)
     self:SetRPTimerColorG(self.DefaultFontColor.g)
@@ -69,7 +73,10 @@ end
 function ENT:SetupDataTables()
     self:NetworkVar("Entity", 0, "owning_ent")
     self:NetworkVar("Bool", 0, "RPTimerPlaying")
+    self:NetworkVar("Bool", 1, "RPTimerStopwatch")
     self:NetworkVar("Float", 0, "RPTimerEndTime")
+    self:NetworkVar("Float", 1, "RPTimerStopwatchStartTime")
+    self:NetworkVar("Float", 2, "RPTimerStopwatchPauseTime")
     self:NetworkVar("String", 0, "RPTimerName")
     self:NetworkVar("String", 1, "RPTimerAlarmSound")
     self:NetworkVar("Int", 0, "RPTimerColorR")
@@ -79,9 +86,8 @@ end
 
 if SERVER then
     function ENT:Think()
-        local alarmPlaying = self:GetRPTimerPlaying()
         local timeLeft = self:GetRPTimerEndTime()
-        if not alarmPlaying and timeLeft != -1 and timeLeft - CurTime() <= 0 then -- play the alarm!
+        if not self:GetRPTimerPlaying() and timeLeft != -1 and timeLeft - CurTime() <= 0 then -- play the alarm!
             self:SetRPTimerPlaying(true)
             --self:EmitSound(self:GetRPTimerAlarmSound()), self.AlarmSoundLevel, 100, self.AlarmSoundVolume)
         end
@@ -98,11 +104,15 @@ if SERVER then
                 --self:StopSound(self:GetRPTimerAlarmSound())
                 return
             end
-            if self:Getowning_ent() != activator then
+            if self:Getowning_ent() != NULL and self:Getowning_ent() != activator then
                 activator:ChatPrint("This isn't your alarm clock.")
                 return
             end
-            net.Start("darkrp_alarm_timer_openui")
+            if self:GetRPTimerStopwatch() and self:GetRPTimerStopwatchPauseTime() == -1 then
+                self:SetRPTimerStopwatchPauseTime(CurTime())
+                return
+            end
+            net.Start("v_alarm_timer_openui")
             net.WriteEntity(self)
             net.Send(activator)
         end
@@ -110,21 +120,22 @@ if SERVER then
 
     function ENT:OnTakeDamage(dmg) -- allow players to destroy them
         self:TakePhysicsDamage(dmg)
-        self.damage = (self.damage or 100) - dmg:GetDamage()
+        self.damage = (self.damage or self.AlarmMaxHealth:GetInt()) - dmg:GetDamage()
         if self.damage <= 0 then
             self:Remove()
         end
     end
 
-    net.Receive("darkrp_alarm_timer_config", function(len, ply)
+    net.Receive("v_alarm_timer_config", function(len, ply)
         local alarmEnt = net.ReadEntity()
         local alarmName = net.ReadString()
         local alarmTime = net.ReadFloat()
+        local alarmStopwatchMode = net.ReadBool()
         local alarmSound = net.ReadString()
         local alarmModelColor = net.ReadTable()
         local alarmFontColor = net.ReadTable()
         if not IsValid(alarmEnt) or not IsValid(ply) or not alarmEnt.AvailableAlarmSoundsLookup[alarmSound] then return end
-        if alarmEnt:Getowning_ent() != ply then
+        if alarmEnt:Getowning_ent() != NULL and alarmEnt:Getowning_ent() != ply then
             ply:ChatPrint("This isn't your alarm clock.")
             return
         end
@@ -132,16 +143,23 @@ if SERVER then
             ply:ChatPrint("Alarm name can only be " .. alarmEnt.AlarmNameMaxCharacters:GetInt() .. " characters maximum.")
             return
         end
-        if alarmTime > alarmEnt.AlarmMaxTimeHours * 60 * 60 then
-            ply:ChatPrint("Alarm time too long. " .. alarmEnt.AlarmMaxTimeHours .. " hours maximum.")
-            return
-        elseif alarmTime <= 0 then
-            alarmEnt:SetRPTimerEndTime(-1)
-        elseif alarmTime / 60 < alarmEnt.MinimumAlarmTime:GetInt() then
-            ply:ChatPrint("The minimum timer is " .. alarmEnt.MinimumAlarmTime:GetInt() .. " minutes.")
-            return
+        alarmEnt:SetRPTimerStopwatchPauseTime(-1)
+        alarmEnt:SetRPTimerStopwatch(alarmStopwatchMode)
+        if not alarmStopwatchMode then
+            if alarmTime > alarmEnt.AlarmMaxTimeHours * 60 * 60 then
+                ply:ChatPrint("Alarm time too long. " .. alarmEnt.AlarmMaxTimeHours .. " hours maximum.")
+                return
+            elseif alarmTime <= 0 then
+                alarmEnt:SetRPTimerEndTime(-1)
+            elseif alarmTime / 60 < alarmEnt.MinimumAlarmTime:GetInt() then
+                ply:ChatPrint("The minimum timer is " .. alarmEnt.MinimumAlarmTime:GetInt() .. " minutes.")
+                return
+            else
+                alarmEnt:SetRPTimerEndTime(CurTime() + alarmTime)
+            end
         else
-            alarmEnt:SetRPTimerEndTime(CurTime() + alarmTime)
+            alarmEnt:SetRPTimerEndTime(-1)
+            alarmEnt:SetRPTimerStopwatchStartTime(CurTime())
         end
         alarmEnt:SetRPTimerName(alarmName)
         alarmEnt:SetRPTimerAlarmSound(alarmSound)
@@ -194,6 +212,7 @@ if CLIENT then
         ang:RotateAroundAxis(ang:Forward(), 45)
 
         local timerEnd = self:GetRPTimerEndTime()
+        local stopwatchMode = self:GetRPTimerStopwatch()
         local alarmPlaying = self:GetRPTimerPlaying()
         local fontColorRed = self:GetRPTimerColorR()
         local fontColorGreen = self:GetRPTimerColorG()
@@ -201,7 +220,7 @@ if CLIENT then
         if self.CachedFontColor.r != fontColorRed or self.CachedFontColor.g != fontColorGreen or self.CachedFontColor.b != fontColorBlue then
             self.CachedFontColor = Color(fontColorRed, fontColorGreen, fontColorBlue)
         end
-        if timerEnd == -1 then -- When there's no timer just show the local time.
+        if timerEnd == -1 and not stopwatchMode then -- When there's no timer just show the local time.
             cam.Start3D2D(pos, ang, 0.3)
                 local flash = CurTime() % 2 < 1
                 local dateFormat = "%I:%M %p"
@@ -233,25 +252,39 @@ if CLIENT then
                     end
                 cam.End3D2D()
             end
-            local timeLeft = timerEnd - CurTime()
+            local timeDisplay
+            if stopwatchMode then
+                if self:GetRPTimerStopwatchPauseTime() != -1 then
+                    timeDisplay = self:GetRPTimerStopwatchPauseTime() - self:GetRPTimerStopwatchStartTime()
+                else
+                    timeDisplay = CurTime() - self:GetRPTimerStopwatchStartTime()
+                end
+            else
+                timeDisplay = timerEnd - CurTime()
+            end
             local hours = 0
             local minutes = 0
             local seconds = 0
-            if timeLeft > 0 then
-                hours = math.floor(timeLeft / 3600)
-                minutes = math.floor((timeLeft % 3600) / 60)
-                seconds = timeLeft % 60
+            if timeDisplay > 0 then
+                hours = math.floor(timeDisplay / 3600)
+                minutes = math.floor((timeDisplay % 3600) / 60)
+                seconds = math.floor(timeDisplay % 60)
             end
 
             cam.Start3D2D(pos, ang, 0.3)
                 if alarmPlaying == false or (alarmPlaying and CurTime() % 2 < 1) then
-                    draw.SimpleText(string.format("%02d:%02d:%02d", hours, minutes, seconds), "DefaultFixed", 0, 18, self.CachedFontColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                    if stopwatchMode and hours < 1 then -- display milliseconds
+                        timeString = string.format("%02d:%02d.%02d", minutes, seconds, math.floor((timeDisplay % 1) * 100))
+                    else
+                        timeString = string.format("%02d:%02d:%02d", hours, minutes, seconds)
+                    end
+                    draw.SimpleText(timeString, "DefaultFixed", 0, 18, self.CachedFontColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 end
             cam.End3D2D()
         end
     end
 
-    net.Receive("darkrp_alarm_timer_openui", function(len, ply)
+    net.Receive("v_alarm_timer_openui", function(len, ply)
         local ent = net.ReadEntity()
         if not IsValid(ent) then return end
         local timerEnd = ent:GetRPTimerEndTime()
@@ -636,9 +669,9 @@ if CLIENT then
         repeatDescription:SetSize(180, 50) */
         
         local saveButton = vgui.Create("DButton", frame)
-        saveButton:SetText("Update Timer")
+        saveButton:SetText("Start Timer")
         saveButton:Dock(BOTTOM)
-        saveButton:DockMargin(10, 10, 10, 10)
+        saveButton:DockMargin(10, 0, 10, 10)
         saveButton.DoClick = function()
             if not IsValid(ent) then return end
             local alarmName = nameEntry:GetValue()
@@ -647,13 +680,36 @@ if CLIENT then
             local seconds = tonumber(secondsEntry:GetValue()) or 0
             local soundToPlay = soundList:GetValue()
 
-            net.Start("darkrp_alarm_timer_config")
-            net.WriteEntity(ent)
-            net.WriteString(alarmName)
-            net.WriteFloat(hours * 3600 + minutes * 60 + seconds)
-            net.WriteString(soundToPlay)
-            net.WriteTable(Color(colorRed:GetValue(), colorGreen:GetValue(), colorBlue:GetValue())) -- writing colorCube:GetRGB() would sometimes be off by a few for r/g/b? wtf
-            net.WriteTable(Color(fontColorRed:GetValue(), fontColorGreen:GetValue(), fontColorBlue:GetValue()))
+            net.Start("v_alarm_timer_config")
+                net.WriteEntity(ent)
+                net.WriteString(alarmName)
+                net.WriteFloat(hours * 3600 + minutes * 60 + seconds)
+                net.WriteBool(false)
+                net.WriteString(soundToPlay)
+                net.WriteTable(Color(colorRed:GetValue(), colorGreen:GetValue(), colorBlue:GetValue())) -- writing colorCube:GetRGB() would sometimes be off by a few for r/g/b? wtf
+                net.WriteTable(Color(fontColorRed:GetValue(), fontColorGreen:GetValue(), fontColorBlue:GetValue()))
+            net.SendToServer()
+
+            frame:Close()
+        end
+
+        local stopwatchButton = vgui.Create("DButton", frame)
+        stopwatchButton:SetText("Start Stopwatch")
+        stopwatchButton:Dock(BOTTOM)
+        stopwatchButton:DockMargin(10, 10, 10, 0)
+        stopwatchButton.DoClick = function()
+            if not IsValid(ent) then return end
+            local alarmName = nameEntry:GetValue()
+            local soundToPlay = soundList:GetValue()
+
+            net.Start("v_alarm_timer_config")
+                net.WriteEntity(ent)
+                net.WriteString(alarmName)
+                net.WriteFloat(0)
+                net.WriteBool(true)
+                net.WriteString(soundToPlay)
+                net.WriteTable(Color(colorRed:GetValue(), colorGreen:GetValue(), colorBlue:GetValue())) -- writing colorCube:GetRGB() would sometimes be off by a few for r/g/b? wtf
+                net.WriteTable(Color(fontColorRed:GetValue(), fontColorGreen:GetValue(), fontColorBlue:GetValue()))
             net.SendToServer()
 
             frame:Close()
